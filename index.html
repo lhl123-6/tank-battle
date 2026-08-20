@@ -197,11 +197,25 @@ function tankBlocked(t, nx, ny, self) {
 }
 function moveTank(t) {
   const [dx, dy] = DV[t.dir];
-  // 转向时向 24px 半格对齐，方便钻进单格通道
-  if (dx === 0) t.x = Math.round(t.x / 24) * 24;
-  if (dy === 0) t.y = Math.round(t.y / 24) * 24;
+  // 转向时向 24px 半格对齐，方便钻进单格通道；
+  // 对齐前先碰撞校验，防止瞬间位移进墙/其他坦克导致永久卡死
+  if (dx === 0) {
+    const sx = Math.round(t.x / 24) * 24;
+    if (sx !== t.x && !tankBlocked(t, sx, t.y, t)) t.x = sx;
+  } else {
+    const sy = Math.round(t.y / 24) * 24;
+    if (sy !== t.y && !tankBlocked(t, t.x, sy, t)) t.y = sy;
+  }
   const nx = t.x + dx * t.speed, ny = t.y + dy * t.speed;
   if (!tankBlocked(t, nx, ny, t)) { t.x = nx; t.y = ny; return true; }
+  // 兜底自救：若已身陷重叠（原地即被堵），向四周寻找最近脱困点
+  if (tankBlocked(t, t.x, t.y, t)) {
+    for (const d of [2, 4, 6, 8, 12, 16, 24]) {
+      for (const [ox, oy] of [[d, 0], [-d, 0], [0, d], [0, -d]]) {
+        if (!tankBlocked(t, t.x + ox, t.y + oy, t)) { t.x += ox; t.y += oy; return false; }
+      }
+    }
+  }
   return false;
 }
 function fire(t) {
@@ -229,8 +243,15 @@ function enemyThink(e) {
     e.dir = choices[Math.floor(Math.random() * choices.length)];
     e.turnTimer = 40 + Math.random() * 70;
   }
-  if (!moveTank(e)) {                                  // 被堵 → 立刻换向
-    e.dir = Math.floor(Math.random() * 4);
+  if (!moveTank(e)) {                                  // 被堵 → 只从可通行方向里挑，不再瞎撞墙
+    const free = [0, 1, 2, 3].filter(d => {
+      const [fx, fy] = DV[d];
+      const ax = fx === 0 ? Math.round(e.x / 24) * 24 : e.x;   // 探测时模拟对齐
+      const ay = fy === 0 ? Math.round(e.y / 24) * 24 : e.y;
+      return !tankBlocked(e, ax + fx * e.speed, ay + fy * e.speed, e)
+          || !tankBlocked(e, e.x + fx * e.speed, e.y + fy * e.speed, e);
+    });
+    if (free.length) e.dir = free[Math.floor(Math.random() * free.length)];
     e.turnTimer = 30 + Math.random() * 50;
   }
   const aligned =
