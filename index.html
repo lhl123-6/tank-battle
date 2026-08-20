@@ -77,6 +77,7 @@ footer{margin-top:18px;font-size:12px;color:var(--text-2);letter-spacing:.08em;t
   <div class="cell"><div class="lbl">得分 SCORE</div><div class="val" id="score">0</div></div>
   <div class="cell"><div class="lbl">生命 LIVES</div><div class="val warn" id="lives">3</div></div>
   <div class="cell"><div class="lbl">护甲 ARMOR</div><div class="val warn" id="armor">3</div></div>
+  <div class="cell"><div class="lbl">基地 BASE</div><div class="val warn" id="basehp">5</div></div>
   <div class="cell"><div class="lbl">剩余敌军 ENEMY</div><div class="val" id="left">12</div></div>
   <div class="cell"><div class="lbl">关卡 LEVEL</div><div class="val">1</div></div>
 </div>
@@ -88,9 +89,11 @@ footer{margin-top:18px;font-size:12px;color:var(--text-2);letter-spacing:.08em;t
     <div class="card">
       <div class="ttl">坦克大战 · <em>校园保卫战</em></div>
       <span class="id-tag">地图中央砖墙「LHL」· 罗浩樑 原创</span>
-      <p>敌方坦克从校园北侧三路来袭，誓要摧毁南侧大本营🏫！<br>
+      <p>敌方坦克从校园北侧三路来袭，誓要摧毁南侧大本营🏫（基地有 5 点血量，被打光才算输）！<br>
       驾驶青色坦克（3 点护甲，被击中 3 次才损毁），借助砖墙与草丛掩护，全歼 12 辆敌坦即可获胜。<br>
-      红砖可被炮弹击穿，钢墙坚不可摧，水域阻行不阻弹，草丛可藏身。</p>
+      红砖可被炮弹击穿，钢墙坚不可摧，水域阻行不阻弹，草丛可藏身。<br>
+      击毁<span style="color:#f87171">闪烁的红色敌坦</span>会掉落道具：
+      <b>⭐</b> 火力升级 · <b>❤</b> 护甲+1 · <b>💥</b> 全屏爆破 · <b>⏰</b> 冻结敌军 · <b>🏰</b> 基地加固</p>
       <div class="keys"><kbd>W A S D</kbd> / <kbd>↑ ← ↓ →</kbd> 移动 &nbsp; <kbd>空格</kbd> / <kbd>J</kbd> 开炮 &nbsp; <kbd>P</kbd> 暂停</div>
       <button class="btn" id="startBtn">开 始 战 斗</button>
     </div>
@@ -152,15 +155,19 @@ function buildMap() {
 
 /* ---------- 全局状态 ---------- */
 const ENEMY_TOTAL = 12, ENEMY_MAX = 4;
-let map, player, enemies, bullets, booms, keys;
+const BASE_MAX = 5;                                            // 基地血量上限
+const FORT_TILES = [[6, 13], [7, 13], [8, 13], [6, 14], [8, 14]];   // 大本营防线格子
+let map, player, enemies, bullets, booms, keys, powerups;
 let score, lives, spawned, killed, running, paused, muted = false, frame = 0;
+let baseHp, freezeTimer, fortifyTimer;
 
 function reset() {
   map = buildMap();
   player = newTank(4.5 * TILE, 13.2 * TILE, true);
-  enemies = []; bullets = []; booms = []; keys = {};
+  enemies = []; bullets = []; booms = []; keys = {}; powerups = [];
   score = 0; lives = 3; spawned = 0; killed = 0;
   running = false; paused = false; frame = 0;
+  baseHp = BASE_MAX; freezeTimer = 0; fortifyTimer = 0;
   syncHUD();
 }
 
@@ -221,13 +228,13 @@ function moveTank(t) {
 function fire(t) {
   if (t.cool > 0 || !t.alive) return;
   const own = bullets.filter(b => b.fromPlayer === t.isPlayer);
-  if (t.isPlayer && own.length >= 2) return;          // 玩家同屏至多 2 弹
-  if (!t.isPlayer && own.length >= 1) return;
+  const maxB = t.isPlayer ? 2 + (t.power || 0) : 1;    // ⭐ 火力升级：同屏弹数 +1/级
+  if (own.length >= maxB) return;
   const [dx, dy] = DV[t.dir];
   const bx = t.x + SIZE / 2 + dx * (SIZE / 2) - 4;
   const by = t.y + SIZE / 2 + dy * (SIZE / 2) - 4;
   bullets.push({ x: bx, y: by, dir: t.dir, speed: 7.5, fromPlayer: t.isPlayer });
-  t.cool = t.isPlayer ? 16 : 42;
+  t.cool = t.isPlayer ? Math.max(8, 16 - 3 * (t.power || 0)) : 42;
   sfx("shoot");
 }
 
@@ -277,13 +284,16 @@ function stepBullets() {
       const t = map[r][c];
       if (t === 1) { map[r][c] = 0; hit.push(1); }        // 砖被击碎
       else if (t === 2) hit.push(2);                      // 钢墙挡弹
-      else if (t === 9) { hit.push(9); map[r][c] = 0; }   // 基地被毁
+      else if (t === 9 && !hit.includes(9)) { hit.push(9); if (--baseHp <= 0) map[r][c] = 0; }   // 基地扣血（同弹只扣一次），血尽才毁
     }
     if (hit.length) {
       b.dead = true;
-      boom(b.x + 4, b.y + 4, hit.includes(9) ? 34 : 16);
+      boom(b.x + 4, b.y + 4, hit.includes(9) ? (baseHp <= 0 ? 34 : 20) : 16);
       sfx(hit.includes(2) ? "clank" : "hit");
-      if (hit.includes(9)) gameOver(false, "大本营被敌军摧毁了……");
+      if (hit.includes(9)) {
+        syncHUD();
+        if (baseHp <= 0) gameOver(false, "大本营被敌军摧毁了……");
+      }
       continue;
     }
     // 撞坦克
@@ -311,6 +321,7 @@ function stepBullets() {
           boom(t.x + SIZE / 2, t.y + SIZE / 2, 30);
           score += 100; killed++; syncHUD();
           sfx("explode");
+          if (t.bonus) dropPowerup(t.x, t.y);            // 奖励坦掉落道具
           if (killed >= ENEMY_TOTAL) gameOver(true);
         }
         break;
@@ -335,6 +346,7 @@ function trySpawn() {
     const e = newTank(sx, sy, false);
     if (!tankBlocked(e, sx, sy, e)) {
       e.spawnGuard = 50;
+      e.bonus = Math.random() < .3;                      // 红色奖励坦：击毁掉落道具
       enemies.push(e); spawned++; syncHUD();
       boom(sx + SIZE / 2, sy + SIZE / 2, 18, "#fbbf24");
       return;
@@ -346,8 +358,70 @@ function respawn() {
   const t = newTank(4.5 * TILE, 13.2 * TILE, true);
   if (!tankBlocked(t, t.x, t.y, t)) { Object.assign(player, t); }
   else { Object.assign(player, t, { x: 9.5 * TILE }); }
-  player.alive = true; player.spawnGuard = 90;
+  player.alive = true; player.spawnGuard = 90; player.power = 0;   // 阵亡丢失火力升级
   boom(player.x + SIZE / 2, player.y + SIZE / 2, 22, "#2dd4bf");
+}
+
+/* ---------- 道具 ---------- */
+const POWER_KINDS = ["star", "armor", "bomb", "clock", "fort"];
+const POWER_EMOJI = { star: "⭐", armor: "❤", bomb: "💥", clock: "⏰", fort: "🏰" };
+function dropPowerup(x, y) {
+  const kind = POWER_KINDS[Math.floor(Math.random() * POWER_KINDS.length)];
+  powerups.push({ x: Math.min(Math.max(x, 4), W - 44), y: Math.min(Math.max(y, 4), H - 44),
+                  kind, life: 600 });
+}
+function applyPowerup(kind) {
+  sfx("power");
+  if (kind === "star") {                               // ⭐ 火力升级：弹数+1、射速加快
+    player.power = Math.min((player.power || 0) + 1, 3);
+    boom(player.x + SIZE / 2, player.y + SIZE / 2, 18, "#fbbf24");
+  } else if (kind === "armor") {                       // 🛡 护甲 +1
+    player.hp = Math.min(player.hp + 1, 6);
+    boom(player.x + SIZE / 2, player.y + SIZE / 2, 18, "#2dd4bf");
+  } else if (kind === "bomb") {                        // 💣 全屏爆破
+    for (const e of enemies) {
+      if (!e.alive) continue;
+      e.alive = false; score += 100; killed++;
+      boom(e.x + SIZE / 2, e.y + SIZE / 2, 30);
+    }
+    sfx("explode");
+    if (killed >= ENEMY_TOTAL) gameOver(true);
+  } else if (kind === "clock") {                       // ⏱ 冻结敌军 6 秒
+    freezeTimer = 360;
+    boom(player.x + SIZE / 2, player.y + SIZE / 2, 18, "#7dd3fc");
+  } else if (kind === "fort") {                        // 🏰 基地防线变钢墙 20 秒
+    for (const [c, r] of FORT_TILES) if (map[r][c] === 1) map[r][c] = 2;
+    fortifyTimer = 1200;
+    boom(7 * TILE + TILE / 2, 13.5 * TILE, 22, "#aeb9c6");
+  }
+  syncHUD();
+}
+function stepPowerups() {
+  for (const p of powerups) {
+    p.life--;
+    if (p.life <= 0) { p.dead = true; continue; }
+    if (player.alive &&
+        p.x < player.x + SIZE && p.x + 40 > player.x &&
+        p.y < player.y + SIZE && p.y + 40 > player.y) {
+      p.dead = true;
+      applyPowerup(p.kind);
+    }
+  }
+  powerups = powerups.filter(p => !p.dead);
+}
+function drawPowerups() {
+  for (const p of powerups) {
+    if (p.life < 120 && (frame >> 2) % 2) continue;    // 即将消失时闪烁
+    const bob = Math.sin(frame / 10) * 2;
+    ctx.save();
+    ctx.translate(p.x, p.y + bob);
+    ctx.fillStyle = "rgba(10,18,22,.85)";
+    ctx.strokeStyle = "#fbbf24"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.roundRect(0, 0, 40, 40, 8); ctx.fill(); ctx.stroke();
+    ctx.font = "22px serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(POWER_EMOJI[p.kind], 20, 22);
+    ctx.restore();
+  }
 }
 
 /* ---------- 爆炸粒子 ---------- */
@@ -377,6 +451,7 @@ function sfx(kind) {
       hit:     [200, 60,  .16, "sawtooth", .18],
       clank:   [900, 700, .06, "square", .08],
       explode: [160, 40,  .35, "sawtooth", .22],
+      power:   [520, 1040, .18, "triangle", .2],
       win:     [440, 880, .5,  "triangle", .2],
       lose:    [300, 60,  .7,  "triangle", .2]
     }[kind] || [300, 100, .1, "square", .1];
@@ -429,12 +504,16 @@ function drawTiles(layer) {
         const px = x + 6 + (i * 37) % (TILE - 12), py = y + 6 + (i * 23) % (TILE - 12);
         ctx.beginPath(); ctx.arc(px, py, 5 + (i % 3), 0, 7); ctx.fill();
       }
-    } else if (t === 9 && layer === "base") {                // 基地 🏫
+    } else if (t === 9 && layer === "base") {                // 基地 🏫（带血量格）
       ctx.fillStyle = "rgba(15,118,110,.3)"; ctx.fillRect(x, y, TILE, TILE);
-      ctx.strokeStyle = "#2dd4bf"; ctx.lineWidth = 2;
+      ctx.strokeStyle = baseHp <= 2 ? "#f87171" : "#2dd4bf"; ctx.lineWidth = 2;
       ctx.strokeRect(x + 3, y + 3, TILE - 6, TILE - 6);
       ctx.font = "30px serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.fillText("🏫", x + TILE / 2, y + TILE / 2 + 1);
+      ctx.fillText("🏫", x + TILE / 2, y + TILE / 2 + 3);
+      for (let i = 0; i < BASE_MAX; i++) {                   // 血量格
+        ctx.fillStyle = i < baseHp ? (baseHp <= 2 ? "#f87171" : "#2dd4bf") : "rgba(120,140,140,.25)";
+        ctx.fillRect(x + 4 + i * 8.4, y - 7, 6.5, 4);
+      }
     }
   }
 }
@@ -444,8 +523,10 @@ function drawTank(t) {
   ctx.translate(t.x + SIZE / 2, t.y + SIZE / 2);
   ctx.rotate(t.dir * Math.PI / 2);
   if (t.spawnGuard > 0 && (frame >> 2) % 2) ctx.globalAlpha = .45;  // 出生无敌闪烁
-  const body = t.isPlayer ? "#14b8a6" : "#8a9a5b";
-  const dark = t.isPlayer ? "#0b6b60" : "#5d6b3d";
+  let body = t.isPlayer ? "#14b8a6" : "#8a9a5b";
+  let dark = t.isPlayer ? "#0b6b60" : "#5d6b3d";
+  if (!t.isPlayer && freezeTimer > 0) { body = "#7dd3fc"; dark = "#4a90b8"; }   // 冻结冰蓝
+  else if (t.bonus && (frame >> 3) % 2) { body = "#e05555"; dark = "#a13232"; } // 奖励坦闪红
   // 履带
   ctx.fillStyle = "#22303a";
   ctx.fillRect(-SIZE/2, -SIZE/2, 10, SIZE); ctx.fillRect(SIZE/2 - 10, -SIZE/2, 10, SIZE);
@@ -482,6 +563,7 @@ function draw() {
   for (const e of enemies) drawTank(e);
   drawTank(player);
   drawTiles("top");                                              // 草丛覆盖
+  drawPowerups();
   // 子弹
   for (const b of bullets) {
     ctx.fillStyle = b.fromPlayer ? "#fde68a" : "#fca5a5";
@@ -523,14 +605,18 @@ function loop() {
       if (k.fire) fire(player);
     }
     if (player.cool > 0) player.cool--;
+    if (freezeTimer > 0) freezeTimer--;
+    if (fortifyTimer > 0 && --fortifyTimer === 0)
+      for (const [c, r] of FORT_TILES) if (map[r][c] === 2) map[r][c] = 1;   // 加固失效还原为砖
     for (const e of enemies) {
       if (!e.alive) continue;
       if (e.cool > 0) e.cool--;
-      enemyThink(e);
+      if (freezeTimer <= 0) enemyThink(e);             // ⏱ 冻结期间敌军原地瘫痪
     }
     enemies = enemies.filter(e => e.alive);
     trySpawn();
     stepBullets();
+    stepPowerups();
     stepBooms();
   }
   draw();
@@ -543,6 +629,7 @@ function syncHUD() {
   $("score").textContent = score;
   $("lives").textContent = lives;
   $("armor").textContent = player.hp;
+  $("basehp").textContent = baseHp;
   $("left").textContent = ENEMY_TOTAL - killed;
 }
 function gameOver(win, msg) {
